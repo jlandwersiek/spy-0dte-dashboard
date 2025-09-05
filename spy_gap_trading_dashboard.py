@@ -644,8 +644,8 @@ class GapTradingAnalyzer:
                         spy_data['debug_info'].append("No historical data from Tradier")
                 
         except Exception as e:
-                    spy_data['error'] = f"Tradier error: {str(e)}"
-                    spy_data['debug_info'].append(f"Tradier failed: {str(e)}")
+                spy_data['error'] = f"Tradier error: {str(e)}"
+                spy_data['debug_info'].append(f"Tradier failed: {str(e)}")
     
                     # FALLBACK: Use Yahoo Finance only if Tradier fails
                     try:
