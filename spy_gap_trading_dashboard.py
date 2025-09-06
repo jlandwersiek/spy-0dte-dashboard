@@ -842,19 +842,63 @@ class GapTradingAnalyzer:
         return internals
 
     def calculate_gap_analysis(self) -> Dict:
-        """Calculate gap analysis with transparent points breakdown"""
-        try:
-            spy_data = self.get_spy_data_enhanced()
-            current_price = spy_data.get('current_price', 640.27)
+    """Calculate gap analysis with proper weekend handling and transparent points breakdown"""
+    try:
+        spy_data = self.get_spy_data_enhanced()
+        current_price = spy_data.get('current_price', 640.27)
+        
+        # Check if it's a weekend or after hours
+        current_time = datetime.now(self.miami_tz)
+        is_weekend = current_time.weekday() >= 5  # Saturday = 5, Sunday = 6
+        is_after_hours = current_time.hour >= 16 or current_time.hour < 9 or (current_time.hour == 9 and current_time.minute < 30)
+        
+        # Initialize with proxy/default values
+        yesterday_close = current_price * 1.005  # Default small gap
+        today_open = current_price
+        today_volume = 50000000
+        avg_volume = 45000000
+        gap_pct = 0.0  # Default to no gap
+        gap_status = "LIVE"
+        
+        if is_weekend:
+            # Weekend logic: Get Friday's close for Monday gap calculation
+            try:
+                # Get last 5 trading days to ensure we get Friday
+                start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+                end_date = datetime.now().strftime('%Y-%m-%d')
+                tradier_hist = self.api.get_historical_quotes('SPY', '1day', start_date, end_date)
+                
+                if tradier_hist and 'history' in tradier_hist:
+                    hist_data = tradier_hist['history']['day']
+                    if isinstance(hist_data, dict):
+                        hist_data = [hist_data]
+                    
+                    if len(hist_data) >= 1:
+                        # Use the most recent trading day (Friday) as "yesterday"
+                        yesterday_close = float(hist_data[-1]['close'])
+                        today_open = yesterday_close  # Unknown until Monday
+                        today_volume = float(hist_data[-1]['volume'])
+                        gap_pct = 0.0  # Can't calculate until Monday open
+                        gap_status = "WEEKEND_PENDING"
+            except:
+                pass  # Use fallback
             
-            # Initialize with proxy/default values
-            yesterday_close = current_price * 1.005  # Default small gap
-            today_open = current_price
-            today_volume = 50000000
-            avg_volume = 45000000
-            gap_pct = -1.2  # Based on typical gap down
-            
-            # Try Tradier first (silently)
+            # Try Yahoo fallback for weekend
+            if gap_pct == 0.0 and gap_status == "WEEKEND_PENDING":
+                try:
+                    spy_hist = get_cached_yahoo_data('SPY', '5d', '1d')
+                    if not spy_hist.empty and spy_hist.shape[0] >= 1:
+                        yesterday_close = spy_hist['Close'].iloc[-1]  # Friday close
+                        today_open = yesterday_close
+                        today_volume = spy_hist['Volume'].iloc[-1]
+                        avg_volume = spy_hist['Volume'].tail(5).mean()
+                        gap_pct = 0.0  # Still can't calculate
+                        gap_status = "WEEKEND_PENDING"
+                except:
+                    pass
+                    
+        else:
+            # Regular weekday logic
             try:
                 start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
                 end_date = datetime.now().strftime('%Y-%m-%d')
@@ -870,11 +914,12 @@ class GapTradingAnalyzer:
                         today_open = float(hist_data[-1]['open'])
                         today_volume = float(hist_data[-1]['volume'])
                         gap_pct = ((today_open - yesterday_close) / yesterday_close) * 100
+                        gap_status = "LIVE"
             except:
                 pass  # Silent fallback
             
-            # Try Yahoo fallback (silently)
-            if gap_pct == -1.2:  # Still using default
+            # Try Yahoo fallback (silently) for weekdays
+            if gap_pct == 0.0 and gap_status == "LIVE":
                 try:
                     spy_hist = get_cached_yahoo_data('SPY', '5d', '1d')
                     if not spy_hist.empty and spy_hist.shape[0] >= 2:
@@ -883,153 +928,178 @@ class GapTradingAnalyzer:
                         today_volume = spy_hist['Volume'].iloc[-1]
                         avg_volume = spy_hist['Volume'].tail(5).mean()
                         gap_pct = ((today_open - yesterday_close) / yesterday_close) * 100
+                        gap_status = "LIVE"
                 except:
                     pass  # Use proxy values
-            
-            # POINTS BREAKDOWN - Make this very transparent
-            points_breakdown = {
-                'gap_size': {'points': 0, 'reason': ''},
-                'statistical_significance': {'points': 0, 'reason': ''},
-                'volume_confirmation': {'points': 0, 'reason': ''},
-                'vwap_alignment': {'points': 0, 'reason': ''},
-                'es_alignment': {'points': 0.5, 'reason': 'ES futures alignment (assumed)'},
-                'total_base_points': 0,
-                'direction_multiplier': 1,
-                'final_points': 0
-            }
-            
-            # Volume analysis
-            volume_surge_ratio = today_volume / avg_volume if avg_volume > 0 else 1.39
-            
-            # VWAP calculation
-            vwap_data = spy_data.get('vwap_data', {})
-            vwap_distance = vwap_data.get('distance_pct', 0.0)
-            
-            # VWAP status
-            if abs(vwap_distance) < 0.05:
-                vwap_status = "AT VWAP"
-            elif vwap_distance > 0.25:
-                vwap_status = "STRONG ABOVE"
-            elif vwap_distance > 0.05:
-                vwap_status = "ABOVE"
-            elif vwap_distance < -0.25:
-                vwap_status = "STRONG BELOW"
-            else:
-                vwap_status = "BELOW"
-            
-            # GAP SIZE POINTS (Transparent calculation)
-            abs_gap = abs(gap_pct)
-            if abs_gap >= 2.5:
-                gap_size_category = "MONSTER"
-                points_breakdown['gap_size']['points'] = 1.0
-                points_breakdown['gap_size']['reason'] = f"Monster gap {abs_gap:.2f}% (≥2.5%) = 1.0 pts (high unpredictability)"
-            elif abs_gap >= 1.5:
-                gap_size_category = "LARGE"
-                points_breakdown['gap_size']['points'] = 2.0
-                points_breakdown['gap_size']['reason'] = f"Large gap {abs_gap:.2f}% (1.5-2.5%) = 2.0 pts (optimal risk/reward)"
-            elif abs_gap >= 0.75:
-                gap_size_category = "MEDIUM"
-                points_breakdown['gap_size']['points'] = 1.5
-                points_breakdown['gap_size']['reason'] = f"Medium gap {abs_gap:.2f}% (0.75-1.5%) = 1.5 pts (good probability)"
-            elif abs_gap >= 0.5:
-                gap_size_category = "SMALL"
-                points_breakdown['gap_size']['points'] = 1.0
-                points_breakdown['gap_size']['reason'] = f"Small gap {abs_gap:.2f}% (0.5-0.75%) = 1.0 pts (moderate edge)"
-            else:
-                gap_size_category = "MINIMAL"
-                points_breakdown['gap_size']['points'] = 0.0
-                points_breakdown['gap_size']['reason'] = f"Minimal gap {abs_gap:.2f}% (<0.5%) = 0.0 pts (no edge)"
-            
-            # STATISTICAL SIGNIFICANCE POINTS
-            if abs_gap >= 1.5:
-                statistical_significance = "MODERATE"
-                points_breakdown['statistical_significance']['points'] = 0.5
-                points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows moderate significance = 0.5 pts"
-            else:
-                statistical_significance = "LOW"
-                points_breakdown['statistical_significance']['points'] = 0.0
-                points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows low significance = 0.0 pts"
-            
-            # VOLUME CONFIRMATION POINTS
-            if volume_surge_ratio >= 2.0:
-                points_breakdown['volume_confirmation']['points'] = 1.0
-                points_breakdown['volume_confirmation']['reason'] = f"Strong volume surge {volume_surge_ratio:.2f}x (≥2.0x) = 1.0 pts"
-            elif volume_surge_ratio >= 1.5:
-                points_breakdown['volume_confirmation']['points'] = 0.5
-                points_breakdown['volume_confirmation']['reason'] = f"Moderate volume surge {volume_surge_ratio:.2f}x (1.5-2.0x) = 0.5 pts"
-            else:
-                points_breakdown['volume_confirmation']['points'] = 0.0
-                points_breakdown['volume_confirmation']['reason'] = f"Weak volume {volume_surge_ratio:.2f}x (<1.5x) = 0.0 pts"
-            
-            # VWAP ALIGNMENT POINTS
-            if abs(vwap_distance) > 0.25:
-                points_breakdown['vwap_alignment']['points'] = 1.0
-                points_breakdown['vwap_alignment']['reason'] = f"Strong VWAP distance {vwap_distance:+.3f}% (>0.25%) = 1.0 pts"
-            elif abs(vwap_distance) > 0.1:
-                points_breakdown['vwap_alignment']['points'] = 0.5
-                points_breakdown['vwap_alignment']['reason'] = f"Moderate VWAP distance {vwap_distance:+.3f}% (>0.1%) = 0.5 pts"
-            else:
-                points_breakdown['vwap_alignment']['points'] = 0.0
-                points_breakdown['vwap_alignment']['reason'] = f"Neutral VWAP distance {vwap_distance:+.3f}% (≤0.1%) = 0.0 pts"
-            
-            # CALCULATE TOTAL BASE POINTS
-            points_breakdown['total_base_points'] = (
-                points_breakdown['gap_size']['points'] + 
-                points_breakdown['statistical_significance']['points'] + 
-                points_breakdown['volume_confirmation']['points'] + 
-                points_breakdown['vwap_alignment']['points'] + 
-                points_breakdown['es_alignment']['points']
-            )
-            
-            # APPLY DIRECTION MULTIPLIER
-            if gap_pct < 0:  # Gap down
-                if vwap_distance < 0:  # Price below VWAP - alignment
-                    points_breakdown['direction_multiplier'] = -1.0
-                    points_breakdown['final_points'] = -points_breakdown['total_base_points']
-                else:  # Price above VWAP - misalignment
-                    points_breakdown['direction_multiplier'] = -0.5
-                    points_breakdown['final_points'] = -points_breakdown['total_base_points'] * 0.5
-            else:  # Gap up
-                if vwap_distance > 0:  # Price above VWAP - alignment
-                    points_breakdown['direction_multiplier'] = 1.0
-                    points_breakdown['final_points'] = points_breakdown['total_base_points']
-                else:  # Price below VWAP - misalignment
-                    points_breakdown['direction_multiplier'] = 0.5
-                    points_breakdown['final_points'] = points_breakdown['total_base_points'] * 0.5
-            
+        
+        # WEEKEND-SPECIFIC HANDLING
+        if gap_status == "WEEKEND_PENDING":
             return {
-                'gap_pct': gap_pct,
-                'gap_size_category': gap_size_category,
-                'statistical_significance': statistical_significance,
-                'volume_surge_ratio': volume_surge_ratio,
-                'vwap_distance_pct': vwap_distance,
-                'vwap_status': vwap_status,
+                'gap_pct': 0.0,
+                'gap_size_category': 'WEEKEND',
+                'statistical_significance': 'PENDING',
+                'volume_surge_ratio': 1.0,
+                'vwap_distance_pct': 0.0,
+                'vwap_status': 'WEEKEND',
                 'es_alignment': True,
-                'total_points': points_breakdown['final_points'],
-                'points_breakdown': points_breakdown,  # NEW: Detailed breakdown
-                'data_source': spy_data.get('source', 'Proxy'),
-                'error': None
-            }
-            
-        except Exception as e:
-            # Return proxy data that works
-            return {
-                'gap_pct': -1.17,
-                'gap_size_category': 'MEDIUM',
-                'statistical_significance': 'LOW',
-                'volume_surge_ratio': 1.39,
-                'vwap_distance_pct': 0.000,
-                'vwap_status': 'AT VWAP',
-                'es_alignment': True,
-                'total_points': -2.0,
+                'total_points': 0.0,
                 'points_breakdown': {
-                    'gap_size': {'points': 1.5, 'reason': 'Medium gap (proxy estimate)'},
-                    'final_points': -2.0
+                    'gap_size': {'points': 0.0, 'reason': 'Weekend - Monday gap unknown until market opens'},
+                    'final_points': 0.0
                 },
-                'data_source': 'Proxy Fallback',
-                'error': None
+                'data_source': 'Weekend Mode',
+                'error': None,
+                'friday_close': yesterday_close,
+                'weekend_message': f"Market closed for weekend. Friday close: ${yesterday_close:.2f}. Gap will be calculated Monday at 9:30 AM ET."
             }
-
+        
+        # POINTS BREAKDOWN - Make this very transparent
+        points_breakdown = {
+            'gap_size': {'points': 0, 'reason': ''},
+            'statistical_significance': {'points': 0, 'reason': ''},
+            'volume_confirmation': {'points': 0, 'reason': ''},
+            'vwap_alignment': {'points': 0, 'reason': ''},
+            'es_alignment': {'points': 0.5, 'reason': 'ES futures alignment (assumed)'},
+            'total_base_points': 0,
+            'direction_multiplier': 1,
+            'final_points': 0
+        }
+        
+        # Volume analysis
+        volume_surge_ratio = today_volume / avg_volume if avg_volume > 0 else 1.39
+        
+        # VWAP calculation
+        vwap_data = spy_data.get('vwap_data', {})
+        vwap_distance = vwap_data.get('distance_pct', 0.0)
+        
+        # VWAP status
+        if abs(vwap_distance) < 0.05:
+            vwap_status = "AT VWAP"
+        elif vwap_distance > 0.25:
+            vwap_status = "STRONG ABOVE"
+        elif vwap_distance > 0.05:
+            vwap_status = "ABOVE"
+        elif vwap_distance < -0.25:
+            vwap_status = "STRONG BELOW"
+        else:
+            vwap_status = "BELOW"
+        
+        # GAP SIZE POINTS (Transparent calculation)
+        abs_gap = abs(gap_pct)
+        if abs_gap >= 2.5:
+            gap_size_category = "MONSTER"
+            points_breakdown['gap_size']['points'] = 1.0
+            points_breakdown['gap_size']['reason'] = f"Monster gap {abs_gap:.2f}% (≥2.5%) = 1.0 pts (high unpredictability)"
+        elif abs_gap >= 1.5:
+            gap_size_category = "LARGE"
+            points_breakdown['gap_size']['points'] = 2.0
+            points_breakdown['gap_size']['reason'] = f"Large gap {abs_gap:.2f}% (1.5-2.5%) = 2.0 pts (optimal risk/reward)"
+        elif abs_gap >= 0.75:
+            gap_size_category = "MEDIUM"
+            points_breakdown['gap_size']['points'] = 1.5
+            points_breakdown['gap_size']['reason'] = f"Medium gap {abs_gap:.2f}% (0.75-1.5%) = 1.5 pts (good probability)"
+        elif abs_gap >= 0.5:
+            gap_size_category = "SMALL"
+            points_breakdown['gap_size']['points'] = 1.0
+            points_breakdown['gap_size']['reason'] = f"Small gap {abs_gap:.2f}% (0.5-0.75%) = 1.0 pts (moderate edge)"
+        else:
+            gap_size_category = "MINIMAL"
+            points_breakdown['gap_size']['points'] = 0.0
+            points_breakdown['gap_size']['reason'] = f"Minimal gap {abs_gap:.2f}% (<0.5%) = 0.0 pts (no edge)"
+        
+        # Continue with rest of existing logic...
+        # [Include all the remaining statistical_significance, volume_confirmation, vwap_alignment, 
+        #  total_base_points, direction_multiplier, and final_points calculations exactly as before]
+        
+        # STATISTICAL SIGNIFICANCE POINTS
+        if abs_gap >= 1.5:
+            statistical_significance = "MODERATE"
+            points_breakdown['statistical_significance']['points'] = 0.5
+            points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows moderate significance = 0.5 pts"
+        else:
+            statistical_significance = "LOW"
+            points_breakdown['statistical_significance']['points'] = 0.0
+            points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows low significance = 0.0 pts"
+        
+        # VOLUME CONFIRMATION POINTS
+        if volume_surge_ratio >= 2.0:
+            points_breakdown['volume_confirmation']['points'] = 1.0
+            points_breakdown['volume_confirmation']['reason'] = f"Strong volume surge {volume_surge_ratio:.2f}x (≥2.0x) = 1.0 pts"
+        elif volume_surge_ratio >= 1.5:
+            points_breakdown['volume_confirmation']['points'] = 0.5
+            points_breakdown['volume_confirmation']['reason'] = f"Moderate volume surge {volume_surge_ratio:.2f}x (1.5-2.0x) = 0.5 pts"
+        else:
+            points_breakdown['volume_confirmation']['points'] = 0.0
+            points_breakdown['volume_confirmation']['reason'] = f"Weak volume {volume_surge_ratio:.2f}x (<1.5x) = 0.0 pts"
+        
+        # VWAP ALIGNMENT POINTS
+        if abs(vwap_distance) > 0.25:
+            points_breakdown['vwap_alignment']['points'] = 1.0
+            points_breakdown['vwap_alignment']['reason'] = f"Strong VWAP distance {vwap_distance:+.3f}% (>0.25%) = 1.0 pts"
+        elif abs(vwap_distance) > 0.1:
+            points_breakdown['vwap_alignment']['points'] = 0.5
+            points_breakdown['vwap_alignment']['reason'] = f"Moderate VWAP distance {vwap_distance:+.3f}% (>0.1%) = 0.5 pts"
+        else:
+            points_breakdown['vwap_alignment']['points'] = 0.0
+            points_breakdown['vwap_alignment']['reason'] = f"Neutral VWAP distance {vwap_distance:+.3f}% (≤0.1%) = 0.0 pts"
+        
+        # CALCULATE TOTAL BASE POINTS
+        points_breakdown['total_base_points'] = (
+            points_breakdown['gap_size']['points'] + 
+            points_breakdown['statistical_significance']['points'] + 
+            points_breakdown['volume_confirmation']['points'] + 
+            points_breakdown['vwap_alignment']['points'] + 
+            points_breakdown['es_alignment']['points']
+        )
+        
+        # APPLY DIRECTION MULTIPLIER
+        if gap_pct < 0:  # Gap down
+            if vwap_distance < 0:  # Price below VWAP - alignment
+                points_breakdown['direction_multiplier'] = -1.0
+                points_breakdown['final_points'] = -points_breakdown['total_base_points']
+            else:  # Price above VWAP - misalignment
+                points_breakdown['direction_multiplier'] = -0.5
+                points_breakdown['final_points'] = -points_breakdown['total_base_points'] * 0.5
+        else:  # Gap up
+            if vwap_distance > 0:  # Price above VWAP - alignment
+                points_breakdown['direction_multiplier'] = 1.0
+                points_breakdown['final_points'] = points_breakdown['total_base_points']
+            else:  # Price below VWAP - misalignment
+                points_breakdown['direction_multiplier'] = 0.5
+                points_breakdown['final_points'] = points_breakdown['total_base_points'] * 0.5
+        
+        return {
+            'gap_pct': gap_pct,
+            'gap_size_category': gap_size_category,
+            'statistical_significance': statistical_significance,
+            'volume_surge_ratio': volume_surge_ratio,
+            'vwap_distance_pct': vwap_distance,
+            'vwap_status': vwap_status,
+            'es_alignment': True,
+            'total_points': points_breakdown['final_points'],
+            'points_breakdown': points_breakdown,
+            'data_source': spy_data.get('source', 'Proxy'),
+            'error': None
+        }
+        
+    except Exception as e:
+        # Return proxy data that works
+        return {
+            'gap_pct': -1.17,
+            'gap_size_category': 'MEDIUM',
+            'statistical_significance': 'LOW',
+            'volume_surge_ratio': 1.39,
+            'vwap_distance_pct': 0.000,
+            'vwap_status': 'AT VWAP',
+            'es_alignment': True,
+            'total_points': -2.0,
+            'points_breakdown': {
+                'gap_size': {'points': 1.5, 'reason': 'Medium gap (proxy estimate)'},
+                'final_points': -2.0
+            },
+            'data_source': 'Proxy Fallback',
+            'error': None
+        }
     def analyze_market_internals_enhanced(self) -> Dict:
         """Enhanced market internals with transparent points breakdown"""
         try:
