@@ -288,32 +288,47 @@ class ExitSignalManager:
         try:
             if not expiration:
                 expiration = datetime.now().strftime('%Y-%m-%d')  # Today for 0DTE
-            
+        
             options_data = self.api.get_options_chain('SPY', expiration)
+        
+            # Better null checking
+            if not options_data:
+                return None
             
-            if options_data and 'options' in options_data:
-                option_list = options_data['options'].get('option', [])
-                if not isinstance(option_list, list):
-                    option_list = [option_list]
+            if not isinstance(options_data, dict):
+                return None
                 
-                # Find matching strike and type
-                for option in option_list:
-                    if (float(option.get('strike', 0)) == strike and 
-                        option.get('option_type') == option_type.lower()):
-                        
-                        # Get mid price (bid + ask) / 2
-                        bid = float(option.get('bid', 0))
-                        ask = float(option.get('ask', 0))
-                        
-                        if bid > 0 and ask > 0:
-                            return (bid + ask) / 2
-                        elif option.get('last'):
-                            return float(option.get('last', 0))
-                            
-            return None  # Could not find option price
+            if 'options' not in options_data:
+                return None
             
+            option_list = options_data['options'].get('option', [])
+            if not option_list:
+                return None
+            
+            if not isinstance(option_list, list):
+                option_list = [option_list]
+        
+            # Find matching strike and type
+            for option in option_list:
+                if not option or not isinstance(option, dict):
+                    continue
+                
+                if (float(option.get('strike', 0)) == strike and 
+                    option.get('option_type') == option_type.lower()):
+                
+                    # Get mid price (bid + ask) / 2
+                    bid = float(option.get('bid', 0))
+                    ask = float(option.get('ask', 0))
+                
+                    if bid > 0 and ask > 0:
+                        return (bid + ask) / 2
+                    elif option.get('last'):
+                        return float(option.get('last', 0))
+                        
+            return None  # Could not find option price
+        
         except Exception as e:
-            st.error(f"Error fetching option price: {str(e)}")
+            # Remove the st.error call that causes issues
             return None
     
     def get_exit_signals(self, entry_decision: str, entry_price: float, entry_time: datetime, 
@@ -2159,11 +2174,6 @@ def main():
     
     if 'trade_history' not in st.session_state:
         st.session_state['trade_history'] = []
-    
-    # Show data sources info
-    display_data_sources_info()
-    st.title("📈 SPY 0DTE Gap Trading Dashboard")
-    st.markdown("*Tradier PRIMARY + Smart Yahoo Fallbacks + Exit Signals*")
     
     # Show data sources info
     display_data_sources_info()
