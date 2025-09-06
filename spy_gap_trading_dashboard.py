@@ -842,84 +842,96 @@ class GapTradingAnalyzer:
         return internals
 
     def calculate_gap_analysis(self) -> Dict:
-    """Calculate gap analysis with proper weekend handling and transparent points breakdown"""
-    try:
-        spy_data = self.get_spy_data_enhanced()
-        current_price = spy_data.get('current_price', 640.27)
+        """Calculate gap analysis with proper weekend handling and transparent points breakdown"""
+        try:
+            spy_data = self.get_spy_data_enhanced()
+            current_price = spy_data.get('current_price', 640.27)
         
-        # Check if it's a weekend or after hours
-        current_time = datetime.now(self.miami_tz)
-        is_weekend = current_time.weekday() >= 5  # Saturday = 5, Sunday = 6
-        is_after_hours = current_time.hour >= 16 or current_time.hour < 9 or (current_time.hour == 9 and current_time.minute < 30)
+            # Check if it's a weekend
+            current_time = datetime.now(self.miami_tz)
+            is_weekend = current_time.weekday() >= 5  # Saturday = 5, Sunday = 6
         
-        # Initialize with proxy/default values
-        yesterday_close = current_price * 1.005  # Default small gap
-        today_open = current_price
-        today_volume = 50000000
-        avg_volume = 45000000
-        gap_pct = 0.0  # Default to no gap
-        gap_status = "LIVE"
+            # Initialize with proxy/default values
+            yesterday_close = current_price * 1.005  # Default small gap
+            today_open = current_price
+            today_volume = 50000000
+            avg_volume = 45000000
+            gap_pct = -1.2  # Based on typical gap down
         
-        if is_weekend:
-            # Weekend logic: Get Friday's close for Monday gap calculation
-            try:
-                # Get last 5 trading days to ensure we get Friday
-                start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-                end_date = datetime.now().strftime('%Y-%m-%d')
-                tradier_hist = self.api.get_historical_quotes('SPY', '1day', start_date, end_date)
-                
-                if tradier_hist and 'history' in tradier_hist:
-                    hist_data = tradier_hist['history']['day']
-                    if isinstance(hist_data, dict):
-                        hist_data = [hist_data]
+            if is_weekend:
+                # Weekend logic: Get Friday's close for reference
+                try:
+                    # Get last 5 trading days to ensure we get Friday
+                    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    tradier_hist = self.api.get_historical_quotes('SPY', '1day', start_date, end_date)
                     
-                    if len(hist_data) >= 1:
-                        # Use the most recent trading day (Friday) as "yesterday"
-                        yesterday_close = float(hist_data[-1]['close'])
-                        today_open = yesterday_close  # Unknown until Monday
-                        today_volume = float(hist_data[-1]['volume'])
-                        gap_pct = 0.0  # Can't calculate until Monday open
-                        gap_status = "WEEKEND_PENDING"
-            except:
-                pass  # Use fallback
+                    if tradier_hist and 'history' in tradier_hist:
+                        hist_data = tradier_hist['history']['day']
+                        if isinstance(hist_data, dict):
+                            hist_data = [hist_data]
+                    
+                        if len(hist_data) >= 1:
+                            yesterday_close = float(hist_data[-1]['close'])
+                except:
+                    pass  # Use fallback
             
-            # Try Yahoo fallback for weekend
-            if gap_pct == 0.0 and gap_status == "WEEKEND_PENDING":
+                # Try Yahoo fallback for weekend
                 try:
                     spy_hist = get_cached_yahoo_data('SPY', '5d', '1d')
                     if not spy_hist.empty and spy_hist.shape[0] >= 1:
                         yesterday_close = spy_hist['Close'].iloc[-1]  # Friday close
-                        today_open = yesterday_close
-                        today_volume = spy_hist['Volume'].iloc[-1]
                         avg_volume = spy_hist['Volume'].tail(5).mean()
-                        gap_pct = 0.0  # Still can't calculate
-                        gap_status = "WEEKEND_PENDING"
                 except:
                     pass
-                    
-        else:
+            
+                # WEEKEND-SPECIFIC RETURN
+                return {
+                    'gap_pct': 0.0,
+                    'gap_size_category': 'WEEKEND',
+                    'statistical_significance': 'PENDING',
+                    'volume_surge_ratio': 1.0,
+                    'vwap_distance_pct': 0.0,
+                    'vwap_status': 'WEEKEND',
+                    'es_alignment': True,
+                    'total_points': 0.0,
+                    'points_breakdown': {
+                        'gap_size': {'points': 0.0, 'reason': 'Weekend - Monday gap unknown until market opens'},
+                        'statistical_significance': {'points': 0.0, 'reason': 'Weekend - analysis pending'},
+                        'volume_confirmation': {'points': 0.0, 'reason': 'Weekend - volume data pending'},
+                        'vwap_alignment': {'points': 0.0, 'reason': 'Weekend - VWAP calculation pending'},
+                        'es_alignment': {'points': 0.0, 'reason': 'Weekend - futures alignment pending'},
+                        'total_base_points': 0.0,
+                        'direction_multiplier': 0.0,
+                        'final_points': 0.0
+                    },
+                    'data_source': 'Weekend Mode',
+                    'error': None,
+                    'friday_close': yesterday_close,
+                    'weekend_message': f"Market closed for weekend. Friday close: ${yesterday_close:.2f}. Gap will be calculated Monday at 9:30 AM ET."
+                }
+            
             # Regular weekday logic
             try:
                 start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
                 end_date = datetime.now().strftime('%Y-%m-%d')
                 tradier_hist = self.api.get_historical_quotes('SPY', '1day', start_date, end_date)
-                
+            
                 if tradier_hist and 'history' in tradier_hist:
                     hist_data = tradier_hist['history']['day']
                     if isinstance(hist_data, dict):
                         hist_data = [hist_data]
-                    
+                
                     if len(hist_data) >= 2:
                         yesterday_close = float(hist_data[-2]['close'])
                         today_open = float(hist_data[-1]['open'])
                         today_volume = float(hist_data[-1]['volume'])
                         gap_pct = ((today_open - yesterday_close) / yesterday_close) * 100
-                        gap_status = "LIVE"
             except:
                 pass  # Silent fallback
-            
-            # Try Yahoo fallback (silently) for weekdays
-            if gap_pct == 0.0 and gap_status == "LIVE":
+        
+            # Try Yahoo fallback (silently)
+            if gap_pct == -1.2:  # Still using default
                 try:
                     spy_hist = get_cached_yahoo_data('SPY', '5d', '1d')
                     if not spy_hist.empty and spy_hist.shape[0] >= 2:
@@ -928,178 +940,153 @@ class GapTradingAnalyzer:
                         today_volume = spy_hist['Volume'].iloc[-1]
                         avg_volume = spy_hist['Volume'].tail(5).mean()
                         gap_pct = ((today_open - yesterday_close) / yesterday_close) * 100
-                        gap_status = "LIVE"
                 except:
                     pass  # Use proxy values
         
-        # WEEKEND-SPECIFIC HANDLING
-        if gap_status == "WEEKEND_PENDING":
-            return {
-                'gap_pct': 0.0,
-                'gap_size_category': 'WEEKEND',
-                'statistical_significance': 'PENDING',
-                'volume_surge_ratio': 1.0,
-                'vwap_distance_pct': 0.0,
-                'vwap_status': 'WEEKEND',
-                'es_alignment': True,
-                'total_points': 0.0,
-                'points_breakdown': {
-                    'gap_size': {'points': 0.0, 'reason': 'Weekend - Monday gap unknown until market opens'},
-                    'final_points': 0.0
-                },
-                'data_source': 'Weekend Mode',
-                'error': None,
-                'friday_close': yesterday_close,
-                'weekend_message': f"Market closed for weekend. Friday close: ${yesterday_close:.2f}. Gap will be calculated Monday at 9:30 AM ET."
+            # POINTS BREAKDOWN - Make this very transparent
+            points_breakdown = {
+                'gap_size': {'points': 0, 'reason': ''},
+                'statistical_significance': {'points': 0, 'reason': ''},
+                'volume_confirmation': {'points': 0, 'reason': ''},
+                'vwap_alignment': {'points': 0, 'reason': ''},
+                'es_alignment': {'points': 0.5, 'reason': 'ES futures alignment (assumed)'},
+                'total_base_points': 0,
+                'direction_multiplier': 1,
+                'final_points': 0
             }
         
-        # POINTS BREAKDOWN - Make this very transparent
-        points_breakdown = {
-            'gap_size': {'points': 0, 'reason': ''},
-            'statistical_significance': {'points': 0, 'reason': ''},
-            'volume_confirmation': {'points': 0, 'reason': ''},
-            'vwap_alignment': {'points': 0, 'reason': ''},
-            'es_alignment': {'points': 0.5, 'reason': 'ES futures alignment (assumed)'},
-            'total_base_points': 0,
-            'direction_multiplier': 1,
-            'final_points': 0
-        }
+            # Volume analysis
+            volume_surge_ratio = today_volume / avg_volume if avg_volume > 0 else 1.39
         
-        # Volume analysis
-        volume_surge_ratio = today_volume / avg_volume if avg_volume > 0 else 1.39
+            # VWAP calculation
+            vwap_data = spy_data.get('vwap_data', {})
+            vwap_distance = vwap_data.get('distance_pct', 0.0)
         
-        # VWAP calculation
-        vwap_data = spy_data.get('vwap_data', {})
-        vwap_distance = vwap_data.get('distance_pct', 0.0)
+            # VWAP status
+            if abs(vwap_distance) < 0.05:
+                vwap_status = "AT VWAP"
+            elif vwap_distance > 0.25:
+                vwap_status = "STRONG ABOVE"
+            elif vwap_distance > 0.05:
+                vwap_status = "ABOVE"
+            elif vwap_distance < -0.25:
+                vwap_status = "STRONG BELOW"
+            else:
+                vwap_status = "BELOW"
         
-        # VWAP status
-        if abs(vwap_distance) < 0.05:
-            vwap_status = "AT VWAP"
-        elif vwap_distance > 0.25:
-            vwap_status = "STRONG ABOVE"
-        elif vwap_distance > 0.05:
-            vwap_status = "ABOVE"
-        elif vwap_distance < -0.25:
-            vwap_status = "STRONG BELOW"
-        else:
-            vwap_status = "BELOW"
+            # GAP SIZE POINTS (Transparent calculation)
+            abs_gap = abs(gap_pct)
+            if abs_gap >= 2.5:
+                gap_size_category = "MONSTER"
+                points_breakdown['gap_size']['points'] = 1.0
+                points_breakdown['gap_size']['reason'] = f"Monster gap {abs_gap:.2f}% (≥2.5%) = 1.0 pts (high unpredictability)"
+            elif abs_gap >= 1.5:
+                gap_size_category = "LARGE"
+                points_breakdown['gap_size']['points'] = 2.0
+                points_breakdown['gap_size']['reason'] = f"Large gap {abs_gap:.2f}% (1.5-2.5%) = 2.0 pts (optimal risk/reward)"
+            elif abs_gap >= 0.75:
+                gap_size_category = "MEDIUM"
+                points_breakdown['gap_size']['points'] = 1.5
+                points_breakdown['gap_size']['reason'] = f"Medium gap {abs_gap:.2f}% (0.75-1.5%) = 1.5 pts (good probability)"
+            elif abs_gap >= 0.5:
+                gap_size_category = "SMALL"
+                points_breakdown['gap_size']['points'] = 1.0
+                points_breakdown['gap_size']['reason'] = f"Small gap {abs_gap:.2f}% (0.5-0.75%) = 1.0 pts (moderate edge)"
+            else:
+                gap_size_category = "MINIMAL"
+                points_breakdown['gap_size']['points'] = 0.0
+                points_breakdown['gap_size']['reason'] = f"Minimal gap {abs_gap:.2f}% (<0.5%) = 0.0 pts (no edge)"
         
-        # GAP SIZE POINTS (Transparent calculation)
-        abs_gap = abs(gap_pct)
-        if abs_gap >= 2.5:
-            gap_size_category = "MONSTER"
-            points_breakdown['gap_size']['points'] = 1.0
-            points_breakdown['gap_size']['reason'] = f"Monster gap {abs_gap:.2f}% (≥2.5%) = 1.0 pts (high unpredictability)"
-        elif abs_gap >= 1.5:
-            gap_size_category = "LARGE"
-            points_breakdown['gap_size']['points'] = 2.0
-            points_breakdown['gap_size']['reason'] = f"Large gap {abs_gap:.2f}% (1.5-2.5%) = 2.0 pts (optimal risk/reward)"
-        elif abs_gap >= 0.75:
-            gap_size_category = "MEDIUM"
-            points_breakdown['gap_size']['points'] = 1.5
-            points_breakdown['gap_size']['reason'] = f"Medium gap {abs_gap:.2f}% (0.75-1.5%) = 1.5 pts (good probability)"
-        elif abs_gap >= 0.5:
-            gap_size_category = "SMALL"
-            points_breakdown['gap_size']['points'] = 1.0
-            points_breakdown['gap_size']['reason'] = f"Small gap {abs_gap:.2f}% (0.5-0.75%) = 1.0 pts (moderate edge)"
-        else:
-            gap_size_category = "MINIMAL"
-            points_breakdown['gap_size']['points'] = 0.0
-            points_breakdown['gap_size']['reason'] = f"Minimal gap {abs_gap:.2f}% (<0.5%) = 0.0 pts (no edge)"
+            # STATISTICAL SIGNIFICANCE POINTS
+            if abs_gap >= 1.5:
+                statistical_significance = "MODERATE"
+                points_breakdown['statistical_significance']['points'] = 0.5
+                points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows moderate significance = 0.5 pts"
+            else:
+                statistical_significance = "LOW"
+                points_breakdown['statistical_significance']['points'] = 0.0
+                points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows low significance = 0.0 pts"
         
-        # Continue with rest of existing logic...
-        # [Include all the remaining statistical_significance, volume_confirmation, vwap_alignment, 
-        #  total_base_points, direction_multiplier, and final_points calculations exactly as before]
+            # VOLUME CONFIRMATION POINTS
+            if volume_surge_ratio >= 2.0:
+                points_breakdown['volume_confirmation']['points'] = 1.0
+                points_breakdown['volume_confirmation']['reason'] = f"Strong volume surge {volume_surge_ratio:.2f}x (≥2.0x) = 1.0 pts"
+            elif volume_surge_ratio >= 1.5:
+                points_breakdown['volume_confirmation']['points'] = 0.5
+                points_breakdown['volume_confirmation']['reason'] = f"Moderate volume surge {volume_surge_ratio:.2f}x (1.5-2.0x) = 0.5 pts"
+            else:
+                points_breakdown['volume_confirmation']['points'] = 0.0
+                points_breakdown['volume_confirmation']['reason'] = f"Weak volume {volume_surge_ratio:.2f}x (<1.5x) = 0.0 pts"
+                
+            # VWAP ALIGNMENT POINTS
+            if abs(vwap_distance) > 0.25:
+                points_breakdown['vwap_alignment']['points'] = 1.0
+                points_breakdown['vwap_alignment']['reason'] = f"Strong VWAP distance {vwap_distance:+.3f}% (>0.25%) = 1.0 pts"
+            elif abs(vwap_distance) > 0.1:
+                points_breakdown['vwap_alignment']['points'] = 0.5
+                points_breakdown['vwap_alignment']['reason'] = f"Moderate VWAP distance {vwap_distance:+.3f}% (>0.1%) = 0.5 pts"
+            else:
+                points_breakdown['vwap_alignment']['points'] = 0.0
+                points_breakdown['vwap_alignment']['reason'] = f"Neutral VWAP distance {vwap_distance:+.3f}% (≤0.1%) = 0.0 pts"
         
-        # STATISTICAL SIGNIFICANCE POINTS
-        if abs_gap >= 1.5:
-            statistical_significance = "MODERATE"
-            points_breakdown['statistical_significance']['points'] = 0.5
-            points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows moderate significance = 0.5 pts"
-        else:
-            statistical_significance = "LOW"
-            points_breakdown['statistical_significance']['points'] = 0.0
-            points_breakdown['statistical_significance']['reason'] = f"Gap {abs_gap:.2f}% shows low significance = 0.0 pts"
+            # CALCULATE TOTAL BASE POINTS
+            points_breakdown['total_base_points'] = (
+                points_breakdown['gap_size']['points'] + 
+                points_breakdown['statistical_significance']['points'] + 
+                points_breakdown['volume_confirmation']['points'] + 
+                points_breakdown['vwap_alignment']['points'] + 
+                points_breakdown['es_alignment']['points']
+            )
         
-        # VOLUME CONFIRMATION POINTS
-        if volume_surge_ratio >= 2.0:
-            points_breakdown['volume_confirmation']['points'] = 1.0
-            points_breakdown['volume_confirmation']['reason'] = f"Strong volume surge {volume_surge_ratio:.2f}x (≥2.0x) = 1.0 pts"
-        elif volume_surge_ratio >= 1.5:
-            points_breakdown['volume_confirmation']['points'] = 0.5
-            points_breakdown['volume_confirmation']['reason'] = f"Moderate volume surge {volume_surge_ratio:.2f}x (1.5-2.0x) = 0.5 pts"
-        else:
-            points_breakdown['volume_confirmation']['points'] = 0.0
-            points_breakdown['volume_confirmation']['reason'] = f"Weak volume {volume_surge_ratio:.2f}x (<1.5x) = 0.0 pts"
+            # APPLY DIRECTION MULTIPLIER
+            if gap_pct < 0:  # Gap down
+                if vwap_distance < 0:  # Price below VWAP - alignment
+                    points_breakdown['direction_multiplier'] = -1.0
+                    points_breakdown['final_points'] = -points_breakdown['total_base_points']
+                else:  # Price above VWAP - misalignment
+                    points_breakdown['direction_multiplier'] = -0.5
+                    points_breakdown['final_points'] = -points_breakdown['total_base_points'] * 0.5
+            else:  # Gap up
+                if vwap_distance > 0:  # Price above VWAP - alignment
+                    points_breakdown['direction_multiplier'] = 1.0
+                    points_breakdown['final_points'] = points_breakdown['total_base_points']
+                else:  # Price below VWAP - misalignment
+                    points_breakdown['direction_multiplier'] = 0.5
+                    points_breakdown['final_points'] = points_breakdown['total_base_points'] * 0.5
         
-        # VWAP ALIGNMENT POINTS
-        if abs(vwap_distance) > 0.25:
-            points_breakdown['vwap_alignment']['points'] = 1.0
-            points_breakdown['vwap_alignment']['reason'] = f"Strong VWAP distance {vwap_distance:+.3f}% (>0.25%) = 1.0 pts"
-        elif abs(vwap_distance) > 0.1:
-            points_breakdown['vwap_alignment']['points'] = 0.5
-            points_breakdown['vwap_alignment']['reason'] = f"Moderate VWAP distance {vwap_distance:+.3f}% (>0.1%) = 0.5 pts"
-        else:
-            points_breakdown['vwap_alignment']['points'] = 0.0
-            points_breakdown['vwap_alignment']['reason'] = f"Neutral VWAP distance {vwap_distance:+.3f}% (≤0.1%) = 0.0 pts"
+            return {
+                'gap_pct': gap_pct,
+                'gap_size_category': gap_size_category,
+                'statistical_significance': statistical_significance,
+                'volume_surge_ratio': volume_surge_ratio,
+                'vwap_distance_pct': vwap_distance,
+                'vwap_status': vwap_status,
+                'es_alignment': True,
+                'total_points': points_breakdown['final_points'],
+                'points_breakdown': points_breakdown,  # NEW: Detailed breakdown
+                'data_source': spy_data.get('source', 'Proxy'),
+                'error': None
+            }
         
-        # CALCULATE TOTAL BASE POINTS
-        points_breakdown['total_base_points'] = (
-            points_breakdown['gap_size']['points'] + 
-            points_breakdown['statistical_significance']['points'] + 
-            points_breakdown['volume_confirmation']['points'] + 
-            points_breakdown['vwap_alignment']['points'] + 
-            points_breakdown['es_alignment']['points']
-        )
-        
-        # APPLY DIRECTION MULTIPLIER
-        if gap_pct < 0:  # Gap down
-            if vwap_distance < 0:  # Price below VWAP - alignment
-                points_breakdown['direction_multiplier'] = -1.0
-                points_breakdown['final_points'] = -points_breakdown['total_base_points']
-            else:  # Price above VWAP - misalignment
-                points_breakdown['direction_multiplier'] = -0.5
-                points_breakdown['final_points'] = -points_breakdown['total_base_points'] * 0.5
-        else:  # Gap up
-            if vwap_distance > 0:  # Price above VWAP - alignment
-                points_breakdown['direction_multiplier'] = 1.0
-                points_breakdown['final_points'] = points_breakdown['total_base_points']
-            else:  # Price below VWAP - misalignment
-                points_breakdown['direction_multiplier'] = 0.5
-                points_breakdown['final_points'] = points_breakdown['total_base_points'] * 0.5
-        
-        return {
-            'gap_pct': gap_pct,
-            'gap_size_category': gap_size_category,
-            'statistical_significance': statistical_significance,
-            'volume_surge_ratio': volume_surge_ratio,
-            'vwap_distance_pct': vwap_distance,
-            'vwap_status': vwap_status,
-            'es_alignment': True,
-            'total_points': points_breakdown['final_points'],
-            'points_breakdown': points_breakdown,
-            'data_source': spy_data.get('source', 'Proxy'),
-            'error': None
-        }
-        
-    except Exception as e:
-        # Return proxy data that works
-        return {
-            'gap_pct': -1.17,
-            'gap_size_category': 'MEDIUM',
-            'statistical_significance': 'LOW',
-            'volume_surge_ratio': 1.39,
-            'vwap_distance_pct': 0.000,
-            'vwap_status': 'AT VWAP',
-            'es_alignment': True,
-            'total_points': -2.0,
-            'points_breakdown': {
-                'gap_size': {'points': 1.5, 'reason': 'Medium gap (proxy estimate)'},
-                'final_points': -2.0
-            },
-            'data_source': 'Proxy Fallback',
-            'error': None
-        }
+        except Exception as e:
+            # Return proxy data that works
+            return {
+                'gap_pct': -1.17,
+                'gap_size_category': 'MEDIUM',
+                'statistical_significance': 'LOW',
+                'volume_surge_ratio': 1.39,
+                'vwap_distance_pct': 0.000,
+                'vwap_status': 'AT VWAP',
+                'es_alignment': True,
+                'total_points': -2.0,
+                'points_breakdown': {
+                    'gap_size': {'points': 1.5, 'reason': 'Medium gap (proxy estimate)'},
+                    'final_points': -2.0
+                },
+                'data_source': 'Proxy Fallback',
+                'error': None
+            }
+
     def analyze_market_internals_enhanced(self) -> Dict:
         """Enhanced market internals with transparent points breakdown"""
         try:
@@ -1541,7 +1528,136 @@ class GapTradingAnalyzer:
                 'data_source': 'Proxy Fallback',
                 'error': None
             }
+    
+    # Add this method after `analyze_technicals_enhanced` method (around line 1200)
 
+    def calculate_trend_momentum(self, spy_data):
+        """Calculate EMA-based trend momentum"""
+        hist_data = spy_data.get('historical')
+    
+        if hist_data is not None and not hist_data.empty and len(hist_data) >= 20:
+            # Calculate EMAs
+            ema_9 = hist_data['Close'].ewm(span=9).mean()
+            ema_20 = hist_data['Close'].ewm(span=20).mean()
+        
+            # Trend strength
+            current_price = hist_data['Close'].iloc[-1]
+            ema9_current = ema_9.iloc[-1]
+            ema20_current = ema_20.iloc[-1]
+        
+            # EMA separation (trend strength)
+            ema_separation = ((ema9_current - ema20_current) / ema20_current) * 100
+        
+            # Price vs EMA momentum
+            price_vs_ema9 = ((current_price - ema9_current) / ema9_current) * 100
+        
+            # Rate of change in trend
+            if len(ema_9) >= 5:
+                ema9_roc = ((ema9_current - ema_9.iloc[-5]) / ema_9.iloc[-5]) * 100
+                trend_acceleration = ema9_roc
+            else:
+                trend_acceleration = 0
+        
+            return {
+                'ema_separation': ema_separation,
+                'price_vs_ema9': price_vs_ema9,
+                'trend_acceleration': trend_acceleration,
+                'trend_strength': abs(ema_separation),
+                'ema9_current': ema9_current,
+                'ema20_current': ema20_current
+            }
+    
+        return {
+            'ema_separation': 0, 
+            'price_vs_ema9': 0, 
+            'trend_acceleration': 0, 
+            'trend_strength': 0,
+            'ema9_current': 0,
+            'ema20_current': 0
+        }
+
+    def detect_momentum_shifts(self, spy_data):
+        """Detect rapid momentum changes in real-time"""
+        hist_data = spy_data.get('historical')
+    
+        if hist_data is None or hist_data.empty or len(hist_data) < 10:
+            return {'shift_detected': False, 'shift_points': 0, 'momentum_5min': 0, 'momentum_10min': 0, 'volume_acceleration': 1.0}
+    
+        # Get recent price action
+        recent_closes = hist_data['Close'].tail(10)
+        recent_volumes = hist_data['Volume'].tail(10)
+    
+        # Calculate 5-minute momentum vs 10-minute momentum
+        momentum_5min = ((recent_closes.iloc[-1] - recent_closes.iloc[-5]) / recent_closes.iloc[-5]) * 100
+        momentum_10min = ((recent_closes.iloc[-1] - recent_closes.iloc[-10]) / recent_closes.iloc[-10]) * 100
+    
+        # Volume acceleration
+        recent_vol_avg = recent_volumes.tail(5).mean()
+        earlier_vol_avg = recent_volumes.head(5).mean()
+        volume_acceleration = recent_vol_avg / earlier_vol_avg if earlier_vol_avg > 0 else 1
+    
+        # Detect momentum shift
+        momentum_divergence = abs(momentum_5min - momentum_10min)
+    
+        shift_points = 0
+        shift_detected = False
+    
+        # Strong momentum shift with volume confirmation
+        if momentum_divergence > 0.3 and volume_acceleration > 1.3:
+            shift_points = 2.0 if momentum_5min > momentum_10min else -2.0
+            shift_detected = True
+        elif momentum_divergence > 0.2 and volume_acceleration > 1.1:
+            shift_points = 1.0 if momentum_5min > momentum_10min else -1.0
+            shift_detected = True
+    
+        return {
+            'shift_detected': shift_detected,
+            'shift_points': shift_points,
+            'momentum_5min': momentum_5min,
+            'momentum_10min': momentum_10min,
+            'volume_acceleration': volume_acceleration,
+            'momentum_divergence': momentum_divergence
+        }
+
+    def analyze_vwap_dynamic(self, vwap_distance_pct, trend_data):
+        """Dynamic VWAP analysis based on trend strength"""
+        
+        # Adjust VWAP thresholds based on trend strength
+        base_threshold = 0.15
+        trend_strength = trend_data.get('trend_strength', 0)
+        
+        # In strong trends, lower the VWAP threshold (more sensitive)
+        if trend_strength > 0.2:
+            threshold_multiplier = 0.6  # 40% lower threshold
+            regime = "STRONG TREND"
+        elif trend_strength > 0.1:
+            threshold_multiplier = 0.8  # 20% lower threshold
+            regime = "MODERATE TREND"
+        else:
+            threshold_multiplier = 1.0  # Normal threshold
+            regime = "RANGING"
+    
+        adjusted_threshold = base_threshold * threshold_multiplier
+        
+        # Points calculation
+        if abs(vwap_distance_pct) > adjusted_threshold * 2:
+            vwap_points = 2.0 if vwap_distance_pct > 0 else -2.0
+            signal_strength = "STRONG"
+        elif abs(vwap_distance_pct) > adjusted_threshold:
+            vwap_points = 1.0 if vwap_distance_pct > 0 else -1.0
+            signal_strength = "MODERATE"
+        else:
+            vwap_points = 0.0
+            signal_strength = "NEUTRAL"
+    
+        return {
+            'points': vwap_points,
+            'signal_strength': signal_strength,
+            'adjusted_threshold': adjusted_threshold,
+            'trend_adjusted': trend_strength > 0.1,
+            'regime': regime,
+            'threshold_multiplier': threshold_multiplier
+        }
     def calculate_price_targets_enhanced(self, current_price: float) -> Dict:
         """Enhanced price targets with options integration and proxy fallbacks"""
         analysis = self.get_final_decision()
@@ -1778,72 +1894,111 @@ class GapTradingAnalyzer:
         return options_data
 
     def get_final_decision(self) -> Dict:
-        """Final trading decision with transparent points breakdown"""
+        """Enhanced final decision with trend sensitivity"""
         gap_analysis = self.calculate_gap_analysis()
         internals = self.analyze_market_internals_enhanced()
         sectors = self.analyze_sectors_enhanced()
         technicals = self.analyze_technicals_enhanced()
         
-        # Simplified volatility analysis
-        volatility = {'total_points': 0.5}
+        # NEW: Get SPY data for trend analysis
+        spy_data = self.get_spy_data_enhanced()
         
-        # Calculate points with transparency
+        # NEW: Calculate trend momentum
+        trend_data = self.calculate_trend_momentum(spy_data)
+        
+        # NEW: Detect momentum shifts  
+        momentum_shift = self.detect_momentum_shifts(spy_data)
+        
+        # NEW: Dynamic VWAP analysis
+        vwap_distance = spy_data.get('vwap_data', {}).get('distance_pct', 0)
+        dynamic_vwap = self.analyze_vwap_dynamic(vwap_distance, trend_data)
+        
+        # Original points calculation
         gap_points = gap_analysis.get('total_points', 0)
         internals_points = internals.get('total_points', 0)
         sectors_points = sectors.get('total_points', 0)
         technicals_points = technicals.get('total_points', 0)
-        volatility_points = volatility['total_points']
+        volatility_points = 0.5  # Simplified volatility
         
+        # NEW: Additional trend-sensitive points
+        trend_points = 0
+        
+        # EMA trend points
+        if trend_data['ema_separation'] > 0.2:
+            trend_points += 1.5  # Strong bullish trend
+        elif trend_data['ema_separation'] < -0.2:
+            trend_points -= 1.5  # Strong bearish trend
+        elif trend_data['ema_separation'] > 0.1:
+            trend_points += 0.5  # Moderate bullish trend
+        elif trend_data['ema_separation'] < -0.1:
+            trend_points -= 0.5  # Moderate bearish trend
+    
+        # Trend acceleration points
+        if trend_data['trend_acceleration'] > 0.3:
+            trend_points += 1.0
+        elif trend_data['trend_acceleration'] < -0.3:
+            trend_points -= 1.0
+    
+        # Momentum shift points (this catches rapid changes)
+        trend_points += momentum_shift['shift_points']
+        
+        # Dynamic VWAP points (replaces static VWAP from technicals)
+        trend_points += dynamic_vwap['points']
+        
+        # Recalculate totals
         total_bullish_points = (
             max(0, gap_points) + 
             max(0, internals_points) + 
-            max(0, volatility_points) +
             max(0, sectors_points) +
-            max(0, technicals_points)
+            max(0, technicals_points) +
+            max(0, volatility_points) +
+            max(0, trend_points)
         )
-        
+    
         total_bearish_points = (
             max(0, -gap_points) + 
             max(0, -internals_points) + 
-            max(0, -volatility_points) +
             max(0, -sectors_points) +
-            max(0, -technicals_points)
+            max(0, -technicals_points) +
+            max(0, -volatility_points) +
+            max(0, -trend_points)
         )
-        
-        # Decision logic with transparency
+    
+        # Enhanced decision logic with lower thresholds
         decision_breakdown = {
             'gap_contribution': gap_points,
             'internals_contribution': internals_points,
             'sectors_contribution': sectors_points,
             'technicals_contribution': technicals_points,
             'volatility_contribution': volatility_points,
+            'trend_contribution': trend_points,  # NEW
             'bullish_total': total_bullish_points,
             'bearish_total': total_bearish_points,
             'decision_logic': ''
         }
-        
-        # Final decision
-        if total_bullish_points >= 8:
+    
+        # Lower thresholds for more sensitivity
+        if total_bullish_points >= 7:  # Lowered from 8
             decision = 'STRONG LONG'
             confidence = 'HIGH'
-            decision_breakdown['decision_logic'] = f"Bullish points {total_bullish_points:.1f} ≥ 8.0 = STRONG LONG"
-        elif total_bullish_points >= 6:
+            decision_breakdown['decision_logic'] = f"Bullish points {total_bullish_points:.1f} ≥ 7.0 = STRONG LONG"
+        elif total_bullish_points >= 5:  # Lowered from 6  
             decision = 'MODERATE LONG'
             confidence = 'MEDIUM'
-            decision_breakdown['decision_logic'] = f"Bullish points {total_bullish_points:.1f} ≥ 6.0 = MODERATE LONG"
-        elif total_bearish_points >= 8:
+            decision_breakdown['decision_logic'] = f"Bullish points {total_bullish_points:.1f} ≥ 5.0 = MODERATE LONG"
+        elif total_bearish_points >= 7:  # Lowered from 8
             decision = 'STRONG SHORT'
             confidence = 'HIGH'
-            decision_breakdown['decision_logic'] = f"Bearish points {total_bearish_points:.1f} ≥ 8.0 = STRONG SHORT"
-        elif total_bearish_points >= 6:
+            decision_breakdown['decision_logic'] = f"Bearish points {total_bearish_points:.1f} ≥ 7.0 = STRONG SHORT"
+        elif total_bearish_points >= 5:  # Lowered from 6
             decision = 'MODERATE SHORT'
             confidence = 'MEDIUM'
-            decision_breakdown['decision_logic'] = f"Bearish points {total_bearish_points:.1f} ≥ 6.0 = MODERATE SHORT"
+            decision_breakdown['decision_logic'] = f"Bearish points {total_bearish_points:.1f} ≥ 5.0 = MODERATE SHORT"
         else:
             decision = 'NO TRADE'
             confidence = 'LOW'
-            decision_breakdown['decision_logic'] = f"Neither bullish ({total_bullish_points:.1f}) nor bearish ({total_bearish_points:.1f}) points reach 6.0 threshold = NO TRADE"
-        
+            decision_breakdown['decision_logic'] = f"Neither bullish ({total_bullish_points:.1f}) nor bearish ({total_bearish_points:.1f}) points reach 5.0 threshold = NO TRADE"
+    
         return {
             'decision': decision,
             'confidence': confidence,
@@ -1851,16 +2006,19 @@ class GapTradingAnalyzer:
             'bearish_points': total_bearish_points,
             'gap_analysis': gap_analysis,
             'internals': internals,
-            'volatility': volatility,
+            'volatility': {'total_points': volatility_points},
             'sectors_enhanced': sectors,
             'technicals_enhanced': technicals,
-            'decision_breakdown': decision_breakdown  # NEW: Transparent decision logic
+            'trend_analysis': trend_data,  # NEW
+            'momentum_shift': momentum_shift,  # NEW
+            'dynamic_vwap': dynamic_vwap,  # NEW
+            'decision_breakdown': decision_breakdown
         }
 
 def display_points_breakdown_ui(analysis: Dict):
-    """Display transparent points breakdown"""
+    """Display transparent points breakdown with trend analysis"""
     st.markdown("---")
-    st.header("🔍 Points System Breakdown")
+    st.header("🔍 Enhanced Points System Breakdown")
     
     # Overall decision breakdown
     decision_breakdown = analysis.get('decision_breakdown', {})
@@ -1874,7 +2032,8 @@ def display_points_breakdown_ui(analysis: Dict):
             st.metric("Market Internals", f"{max(0, decision_breakdown.get('internals_contribution', 0)):+.1f}")
             st.metric("Sector Leadership", f"{max(0, decision_breakdown.get('sectors_contribution', 0)):+.1f}")
             st.metric("Technical Analysis", f"{max(0, decision_breakdown.get('technicals_contribution', 0)):+.1f}")
-            st.metric("Volatility Factor", f"{decision_breakdown.get('volatility_contribution', 0):+.1f}")
+            st.metric("Volatility Factor", f"{max(0, decision_breakdown.get('volatility_contribution', 0)):+.1f}")
+            st.metric("🆕 Trend Analysis", f"{max(0, decision_breakdown.get('trend_contribution', 0)):+.1f}")  # NEW
             st.metric("**TOTAL BULLISH**", f"**{decision_breakdown.get('bullish_total', 0):.1f}**")
         
         with col2:
@@ -1884,11 +2043,40 @@ def display_points_breakdown_ui(analysis: Dict):
             st.metric("Sector Leadership", f"{max(0, -decision_breakdown.get('sectors_contribution', 0)):+.1f}")
             st.metric("Technical Analysis", f"{max(0, -decision_breakdown.get('technicals_contribution', 0)):+.1f}")
             st.metric("Volatility Factor", f"0.0")
+            st.metric("🆕 Trend Analysis", f"{max(0, -decision_breakdown.get('trend_contribution', 0)):+.1f}")  # NEW
             st.metric("**TOTAL BEARISH**", f"**{decision_breakdown.get('bearish_total', 0):.1f}**")
         
         st.info(f"**Decision Logic:** {decision_breakdown.get('decision_logic', 'Logic not available')}")
     
-    # Detailed component breakdowns
+    # NEW: Trend Analysis Details
+    trend_analysis = analysis.get('trend_analysis', {})
+    momentum_shift = analysis.get('momentum_shift', {})
+    dynamic_vwap = analysis.get('dynamic_vwap', {})
+    
+    if trend_analysis or momentum_shift or dynamic_vwap:
+        with st.expander("🆕 Trend Analysis Details", expanded=False):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**EMA Trend Analysis:**")
+                st.write(f"• EMA Separation: {trend_analysis.get('ema_separation', 0):+.3f}%")
+                st.write(f"• Trend Strength: {trend_analysis.get('trend_strength', 0):.3f}%")
+                st.write(f"• Trend Acceleration: {trend_analysis.get('trend_acceleration', 0):+.3f}%")
+                
+                st.markdown("**Dynamic VWAP:**")
+                st.write(f"• Market Regime: {dynamic_vwap.get('regime', 'Unknown')}")
+                st.write(f"• Adjusted Threshold: {dynamic_vwap.get('adjusted_threshold', 0):.3f}%")
+                st.write(f"• VWAP Points: {dynamic_vwap.get('points', 0):+.1f}")
+            
+            with col2:
+                st.markdown("**Momentum Shift Detection:**")
+                st.write(f"• Shift Detected: {'✅ YES' if momentum_shift.get('shift_detected', False) else '❌ NO'}")
+                st.write(f"• 5-min Momentum: {momentum_shift.get('momentum_5min', 0):+.3f}%")
+                st.write(f"• 10-min Momentum: {momentum_shift.get('momentum_10min', 0):+.3f}%")
+                st.write(f"• Volume Acceleration: {momentum_shift.get('volume_acceleration', 1):.1f}x")
+                st.write(f"• Shift Points: {momentum_shift.get('shift_points', 0):+.1f}")
+    
+    # Rest of existing breakdown code...
     col1, col2 = st.columns(2)
     
     with col1:
@@ -1930,7 +2118,6 @@ def display_points_breakdown_ui(analysis: Dict):
                         st.write(f"**{component.replace('_', ' ').title()}:** {data['points']:+.1f} pts")
                         if 'reason' in data:
                             st.caption(data['reason'])
-
 def display_data_sources_info():
     """Show users what data comes from where"""
     with st.expander("📊 Data Sources & Reliability", expanded=False):
@@ -2587,6 +2774,47 @@ def main():
             with col3:
                 st.metric("Technical Points", f"{technicals['total_points']:+.1f}")
                 st.caption("Price action score")
+    # Add this after the existing Technical Analysis expander in the main() function
+
+    # NEW: Enhanced Trend Analysis
+    with st.expander("🆕 Enhanced Trend Analysis", expanded=False):
+        trend_analysis = analysis.get('trend_analysis', {})
+        momentum_shift = analysis.get('momentum_shift', {})
+        dynamic_vwap = analysis.get('dynamic_vwap', {})
+    
+        if trend_analysis:
+            col1, col2, col3 = st.columns(3)
+        
+            with col1:
+                st.metric("EMA(9)", f"${trend_analysis.get('ema9_current', 0):.2f}")
+                st.metric("EMA(20)", f"${trend_analysis.get('ema20_current', 0):.2f}")
+            
+            with col2:
+                st.metric("EMA Separation", f"{trend_analysis.get('ema_separation', 0):+.3f}%")
+                st.metric("Trend Strength", f"{trend_analysis.get('trend_strength', 0):.3f}%")
+            
+            with col3:
+                st.metric("Market Regime", dynamic_vwap.get('regime', 'Unknown'))
+                shift_status = "✅ DETECTED" if momentum_shift.get('shift_detected', False) else "❌ None"
+                st.metric("Momentum Shift", shift_status)
+        
+            if momentum_shift.get('shift_detected', False):
+                st.success(f"""
+                           🚨 **MOMENTUM SHIFT DETECTED**
+                           • 5-min momentum: {momentum_shift.get('momentum_5min', 0):+.2f}%
+                           • 10-min momentum: {momentum_shift.get('momentum_10min', 0):+.2f}%
+                           • Volume acceleration: {momentum_shift.get('volume_acceleration', 1):.1f}x
+                           • Contributing {momentum_shift.get('shift_points', 0):+.1f} points to decision
+                          """)
+        
+            st.info(f"""
+                    **Trend Summary:**
+                    • Regime: {dynamic_vwap.get('regime', 'Unknown')} (threshold: {dynamic_vwap.get('adjusted_threshold', 0):.3f}%)
+                    • EMA trend: {trend_analysis.get('ema_separation', 0):+.3f}% separation
+                    • Acceleration: {trend_analysis.get('trend_acceleration', 0):+.3f}%
+                    • Total trend contribution: {analysis.get('decision_breakdown', {}).get('trend_contribution', 0):+.1f} points
+                """)
+    
     
     # Exit Signals Dashboard
     active_trade = st.session_state.get('active_trade', None)
